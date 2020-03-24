@@ -1,215 +1,102 @@
-#!/usr/bin/env python
-# coding: utf-8
-#
-# Author:   Kazuto Nakashima
-# URL:      http://kazuto1011.github.io
-# Created:  2017-05-26
-
-from collections import Sequence
-
-import numpy as np
 import torch
-import torch.nn as nn
-from torch.nn import functional as F
-from tqdm import tqdm
+import matplotlib.pyplot as plt
+import numpy as np
+
+import gradcam_utils as grad_utils
+import gradcam as gradcam
 
 
-class _BaseWrapper(object):
-    def __init__(self, model):
-        super(_BaseWrapper, self).__init__()
-        self.device = next(model.parameters()).device
-        self.model = model
-        self.handlers = []  # a set of hook function handlers
+class GradCamAbs():
+      def __init__(self, device, config, means, stds):
+          self.device = device
+          self.config = config
+          self.means = means
+          self.stds = stds
+          self.model = config["arch"]
 
-    def _encode_one_hot(self, ids):
-        one_hot = torch.zeros_like(self.logits).to(self.device)
-        one_hot.scatter_(1, ids, 1.0)
-        return one_hot
+          self.gcam = gradcam.GradCAMpp.from_config(**config)
 
-    def forward(self, image):
-        self.image_shape = image.shape[2:]
-        self.logits = self.model(image)
-        self.probs = F.softmax(self.logits, dim=1)
-        return self.probs.sort(dim=1, descending=True)  # ordered results
+      def apply(self, normalized_img, target_class_id):
+          ''' 
+          1. Use unsqueeze to convert image to a batch of size 1
+          2. pass normalized test input for Grad CAM processing..
+          3. get a GradCAM saliency map on the class index..
+          return: orig img, heatmap image and supper imposed images 
+          '''
+          mask, _ = self.gcam(normalized_img.unsqueeze(0), class_idx=target_class_id)
 
-    def backward(self, ids):
-        """
-        Class-specific backpropagation
-        """
-        one_hot = self._encode_one_hot(ids)
-        self.model.zero_grad()
-        self.logits.backward(gradient=one_hot, retain_graph=True)
+          # Un-Mormalize the inp image
+          unnormalizedImg = self.UnNormalize(normalized_img)
 
-    def generate(self):
-        raise NotImplementedError
+          # apply mask on the original image and get the superimposed images(cam_result) and heatmap
+          heatmap, cam_result = grad_utils.visualize_cam(mask, unnormalizedImg)
 
-    def remove_hook(self):
-        """
-        Remove all the forward/backward hook functions
-        """
-        for handle in self.handlers:
-            handle.remove()
+          return unnormalizedImg.cpu(), heatmap, cam_result
 
+      def applyOnImages(self, dataloader, num_of_images=5):
+          gradcam_images = []
+          pred_results = []
 
-class BackPropagation(_BaseWrapper):
-    def forward(self, image):
-        self.image = image.requires_grad_()
-        return super(BackPropagation, self).forward(self.image)
+          data, target = iter(dataloader).next()
+          data, target = data.to(self.device), target.to(self.device)
+          for index, label in enumerate(target[:num_of_images]):
 
-    def generate(self):
-        gradient = self.image.grad.clone()
-        self.image.grad.zero_()
-        return gradient
+            # do class prediction and save results
+            output = self.model(data[index].unsqueeze(0))
+            pred = output.argmax(dim=1, keepdim=True)     # get the index of the max log-probability
+            pred_class_id = pred[0].item()
+            target_class_id = label.item()
+            pred_results.append(dict(pred=pred_class_id, target=target_class_id))  
 
+            # do GradCAM processing and save results
+            origImg, heatmapImg, cam_result = self.apply(data[index],target_class_id)
+            gradcam_images.append([origImg, heatmapImg, cam_result])
 
-class GuidedBackPropagation(BackPropagation):
-    """
-    "Striving for Simplicity: the All Convolutional Net"
-    https://arxiv.org/pdf/1412.6806.pdf
-    Look at Figure 1 on page 8.
-    """
+          return gradcam_images, pred_results
 
-    def __init__(self, model):
-        super(GuidedBackPropagation, self).__init__(model)
+      def UnNormalize(self, tensor):
+          """
+          Args:
+              tensor (Tensor): Tensor image of size (C, H, W) to be normalized.
+          Returns:
+              Tensor: Normalized image.
+          """
+          for t, m, s in zip(tensor, self.means, self.stds):
+            t.mul_(s).add_(m)
+            # The normalize code -> t.sub_(m).div_(s)
+          
+          return tensor
+      
+      def plot_results(self, images_set, predictions, classesname, save_filename="gradcam"):
+          cnt=0
+          nrow = len(images_set)
+          fig = plt.figure(figsize=(10,12))
+          for index, imgs in enumerate(images_set):
+              # original image
+              title = "T:{}, P:{}".format(classesname[predictions[index]["target"]], classesname[predictions[index]["pred"]])
+              ax = fig.add_subplot(nrow, 3, cnt+1, xticks=[], yticks=[])
+              ax.set_title(title)
+              #ax.axis('off')
+              self.imshow(imgs[0])
+              cnt += 1
 
-        def backward_hook(module, grad_in, grad_out):
-            # Cut off negative gradients
-            if isinstance(module, nn.ReLU):
-                return (F.relu(grad_in[0]),)
+              # heatmap
+              ax = fig.add_subplot(nrow, 3, cnt+1, xticks=[], yticks=[])
+              #ax.axis('off')
+              self.imshow(imgs[1])
+              cnt += 1
 
-        for module in self.model.named_modules():
-            self.handlers.append(module[1].register_backward_hook(backward_hook))
+              # superimposed image
+              ax = fig.add_subplot(nrow, 3, cnt+1, xticks=[], yticks=[])
+              #ax.axis('off')
+              self.imshow(imgs[2])
+              cnt += 1
 
+          fig.savefig("{}.png".format(save_filename))
+          return
 
-class Deconvnet(BackPropagation):
-    """
-    "Striving for Simplicity: the All Convolutional Net"
-    https://arxiv.org/pdf/1412.6806.pdf
-    Look at Figure 1 on page 8.
-    """
-
-    def __init__(self, model):
-        super(Deconvnet, self).__init__(model)
-
-        def backward_hook(module, grad_in, grad_out):
-            # Cut off negative gradients and ignore ReLU
-            if isinstance(module, nn.ReLU):
-                return (F.relu(grad_out[0]),)
-
-        for module in self.model.named_modules():
-            self.handlers.append(module[1].register_backward_hook(backward_hook))
-
-
-class GradCAM(_BaseWrapper):
-    """
-    "Grad-CAM: Visual Explanations from Deep Networks via Gradient-based Localization"
-    https://arxiv.org/pdf/1610.02391.pdf
-    Look at Figure 2 on page 4
-    """
-
-    def __init__(self, model, candidate_layers=None):
-        super(GradCAM, self).__init__(model)
-        self.fmap_pool = {}
-        self.grad_pool = {}
-        self.candidate_layers = candidate_layers  # list
-
-        def save_fmaps(key):
-            def forward_hook(module, input, output):
-                self.fmap_pool[key] = output.detach()
-
-            return forward_hook
-
-        def save_grads(key):
-            def backward_hook(module, grad_in, grad_out):
-                self.grad_pool[key] = grad_out[0].detach()
-
-            return backward_hook
-
-        # If any candidates are not specified, the hook is registered to all the layers.
-        for name, module in self.model.named_modules():
-            if self.candidate_layers is None or name in self.candidate_layers:
-                self.handlers.append(module.register_forward_hook(save_fmaps(name)))
-                self.handlers.append(module.register_backward_hook(save_grads(name)))
-
-    def _find(self, pool, target_layer):
-        if target_layer in pool.keys():
-            return pool[target_layer]
-        else:
-            raise ValueError("Invalid layer name: {}".format(target_layer))
-
-    def generate(self, target_layer):
-        fmaps = self._find(self.fmap_pool, target_layer)
-        grads = self._find(self.grad_pool, target_layer)
-        weights = F.adaptive_avg_pool2d(grads, 1)
-
-        gcam = torch.mul(fmaps, weights).sum(dim=1, keepdim=True)
-        gcam = F.relu(gcam)
-        gcam = F.interpolate(
-            gcam, self.image_shape, mode="bilinear", align_corners=False
-        )
-
-        B, C, H, W = gcam.shape
-        gcam = gcam.view(B, -1)
-        gcam -= gcam.min(dim=1, keepdim=True)[0]
-        gcam /= gcam.max(dim=1, keepdim=True)[0]
-        gcam = gcam.view(B, C, H, W)
-
-        return gcam
-
-
-def occlusion_sensitivity(
-    model, images, ids, mean=None, patch=35, stride=1, n_batches=128
-):
-    """
-    "Grad-CAM: Visual Explanations from Deep Networks via Gradient-based Localization"
-    https://arxiv.org/pdf/1610.02391.pdf
-    Look at Figure A5 on page 17
-    Originally proposed in:
-    "Visualizing and Understanding Convolutional Networks"
-    https://arxiv.org/abs/1311.2901
-    """
-
-    torch.set_grad_enabled(False)
-    model.eval()
-    mean = mean if mean else 0
-    patch_H, patch_W = patch if isinstance(patch, Sequence) else (patch, patch)
-    pad_H, pad_W = patch_H // 2, patch_W // 2
-
-    # Padded image
-    images = F.pad(images, (pad_W, pad_W, pad_H, pad_H), value=mean)
-    B, _, H, W = images.shape
-    new_H = (H - patch_H) // stride + 1
-    new_W = (W - patch_W) // stride + 1
-
-    # Prepare sampling grids
-    anchors = []
-    grid_h = 0
-    while grid_h <= H - patch_H:
-        grid_w = 0
-        while grid_w <= W - patch_W:
-            grid_w += stride
-            anchors.append((grid_h, grid_w))
-        grid_h += stride
-
-    # Baseline score without occlusion
-    baseline = model(images).detach().gather(1, ids)
-
-    # Compute per-pixel logits
-    scoremaps = []
-    for i in tqdm(range(0, len(anchors), n_batches), leave=False):
-        batch_images = []
-        batch_ids = []
-        for grid_h, grid_w in anchors[i : i + n_batches]:
-            images_ = images.clone()
-            images_[..., grid_h : grid_h + patch_H, grid_w : grid_w + patch_W] = mean
-            batch_images.append(images_)
-            batch_ids.append(ids)
-        batch_images = torch.cat(batch_images, dim=0)
-        batch_ids = torch.cat(batch_ids, dim=0)
-        scores = model(batch_images).detach().gather(1, batch_ids)
-        scoremaps += list(torch.split(scores, B))
-
-    diffmaps = torch.cat(scoremaps, dim=1) - baseline
-    diffmaps = diffmaps.view(B, new_H, new_W)
-
-    return diffmaps
+      # functions to show an image
+      def imshow(self, img):
+          img = img / 2 + 0.5     # unnormalize
+          npimg = img.numpy()
+          plt.imshow(np.transpose(npimg, (1, 2, 0)))
