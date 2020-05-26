@@ -12,6 +12,7 @@ There Six types of images are there in the dataset. They are
 * And another 100 images are created by flipping in GIMP.
 * So there are 200  images are there now
 
+![Foreground](fg.png)
 
 ### Background images
 * There are 100 **house and shop** images are downloaded from internet.
