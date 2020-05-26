@@ -33,7 +33,7 @@ There Six types of images are there in the dataset. They are
 * Now one fg image is placed randomly on bg images by using random flipping
 * At the same time mask are also created in the same way.
 ![FGBG](bgfg.png)
-![FGBG masks](masks.png)
+![FGBG masks](bgfgmask.png)
 
 
 
