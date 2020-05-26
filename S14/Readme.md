@@ -35,7 +35,9 @@ There Six types of images are there in the dataset. They are
 ![FGBG](bgfg.png)
 ![FGBG masks](bgfgmask.png)
 
-
+### Depth images
+* Depth images are created by using [Depth Models](https://github.com/ialhashim/DenseDepth/blob/master/DenseDepth.ipynb)
+![Depth images](depth.png)
 
 
 
