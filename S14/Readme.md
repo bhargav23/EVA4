@@ -27,7 +27,15 @@ There Six types of images are there in the dataset. They are
 
 ![Mask](masks.png)
 
-### FGBG
+### FGBG and FGBG masks
+* Now there are 100 bg images, 200 fg images and 200 masks are there.
+* First all the 100 bg images are selected and 20 g and images are selected.
+* Now one fg image is placed randomly on bg images by using random flipping
+* At the same time mask are also created in the same way.
+![FGBG](bgfg.png)
+![FGBG masks](masks.png)
+
+
 
 
 
