@@ -16,6 +16,7 @@ There Six types of images are there in the dataset. They are
 
 ### Background images
 * There are 100 **house and shop** images are downloaded from internet.
+![Foreground](bg.png)
 
 ### Foreground mask images
 * I used the GIMP application to create the foreground mask images.
@@ -23,6 +24,8 @@ There Six types of images are there in the dataset. They are
 * After that i filled with black color(CTRL + ,).
 * And inverse seletion(CTRL I) of image will select the foreground and filled with white color(CTRL + .)
 * The shortcuts are very useful in GIMP.
+
+![Mask](masks.png)
 
 ### FGBG
 
