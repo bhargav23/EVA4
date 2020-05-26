@@ -16,6 +16,7 @@ There Six types of images are there in the dataset. They are
 
 ### Background images
 * There are 100 **house and shop** images are downloaded from internet.
+* All the background images are square images of size 448x448x3.
 ![Foreground](bg.png)
 
 ### Foreground mask images
